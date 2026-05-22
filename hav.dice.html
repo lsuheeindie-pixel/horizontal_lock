@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dice Horizon Camera</title>
+
+<style>
+body{
+    margin:0;
+    background:black;
+    overflow:hidden;
+    font-family:Arial;
+}
+
+video{
+    position:absolute;
+    width:1px;
+    height:1px;
+    opacity:0;
+}
+
+canvas{
+    position:absolute;
+    top:0;
+    left:0;
+}
+
+/* TOP BAR */
+.topbar{
+    position:fixed;
+    top:10px;
+    right:10px;
+    display:flex;
+    gap:8px;
+    z-index:10;
+}
+
+button{
+    border:none;
+    padding:10px 12px;
+    border-radius:10px;
+    font-weight:bold;
+    cursor:pointer;
+}
+
+/* BOTTOM CONTROLS */
+.controls{
+    position:fixed;
+    bottom:18px;
+    left:50%;
+    transform:translateX(-50%);
+    display:flex;
+    gap:10px;
+}
+
+.capture{background:white;}
+.record{background:red;color:white;}
+
+/* PANEL */
+.panel{
+    position:fixed;
+    top:0;
+    right:-340px;
+    width:280px;
+    height:100%;
+    background:#111;
+    color:#fff;
+    padding:16px;
+    transition:0.25s;
+    z-index:999;
+}
+
+.panel.open{right:0;}
+
+.panel input,
+.panel select{
+    width:100%;
+    padding:10px;
+    margin:8px 0;
+    border-radius:8px;
+    border:none;
+}
+
+/* watermark */
+.watermark{
+    position:fixed;
+    bottom:90px;
+    right:10px;
+    color:white;
+    font-size:12px;
+    background:rgba(0,0,0,0.45);
+    padding:8px 10px;
+    border-radius:10px;
+    pointer-events:none;
+}
+</style>
+</head>
+
+<body>
+
+<video id="v" autoplay playsinline muted></video>
+<canvas id="c"></canvas>
+
+<div class="topbar">
+<button id="settingsBtn">⚙</button>
+</div>
+
+<div class="panel" id="panel">
+<h3>Settings</h3>
+
+<button id="closeBtn" style="width:100%">Close</button>
+
+<label>Quality</label>
+<select id="quality">
+<option value="0.5">Low</option>
+<option value="0.8" selected>Medium</option>
+<option value="1">High</option>
+</select>
+
+<label>Sensitivity</label>
+<input id="sens" type="range" min="0.5" max="2" step="0.1" value="1">
+
+<label>Orientation</label>
+<select id="orientation">
+<option value="horizontal" selected>Horizontal</option>
+<option value="vertical">Vertical</option>
+</select>
+
+<label>Mode</label>
+<select id="mode">
+<option value="ai" selected>AI Mode</option>
+<option value="manual">Manual</option>
+</select>
+
+<label>Server (mini ahh)</label>
+<input id="server" placeholder="https://server/upload">
+
+</div>
+
+<div class="controls">
+<button class="capture" id="capture">📸</button>
+<button class="record" id="record">🎥</button>
+</div>
+
+<div class="watermark">
+Made by The Dice Team • @lsuheeindie
+</div>
+
+<script>
+
+const v = document.getElementById("v");
+const c = document.getElementById("c");
+const ctx = c.getContext("2d");
+
+/* offscreen recording buffer */
+const recCanvas = document.createElement("canvas");
+const recCtx = recCanvas.getContext("2d");
+
+let mode = "ai";
+
+/* =========================
+   CAMERA SIZE FIX
+========================= */
+function resize(){
+    c.width = innerWidth;
+    c.height = innerHeight;
+
+    recCanvas.width = innerWidth;
+    recCanvas.height = innerHeight;
+}
+addEventListener("resize", resize);
+resize();
+
+/* =========================
+   CAMERA
+========================= */
+navigator.mediaDevices.getUserMedia({
+    video:{facingMode:"environment"},
+    audio:false
+}).then(stream=>{
+    v.srcObject = stream;
+});
+
+/* =========================
+   SENSOR
+========================= */
+let rawTilt = 0;
+let smoothTilt = 0;
+let baseline = 0;
+
+const smoothFactor = 0.08;
+
+addEventListener("deviceorientation",(e)=>{
+    rawTilt = e.gamma || 0;
+});
+
+function updateBaseline(){
+    baseline = baseline * 0.95 + rawTilt * 0.05;
+}
+
+/* =========================
+   COVER FIX
+========================= */
+function coverCrop(vw, vh, cw, ch){
+
+    const vr = vw / vh;
+    const cr = cw / ch;
+
+    let w, h;
+
+    if(vr > cr){
+        h = vh;
+        w = vh * cr;
+    } else {
+        w = vw;
+        h = vw / cr;
+    }
+
+    return {
+        x: (vw - w) / 2,
+        y: (vh - h) / 2,
+        w,
+        h
+    };
+}
+
+/* =========================
+   RENDER ENGINE
+========================= */
+function render(targetCtx, w, h){
+
+    if(v.readyState < 2) return;
+
+    const vw = v.videoWidth;
+    const vh = v.videoHeight;
+
+    updateBaseline();
+
+    const corrected = rawTilt - baseline;
+    smoothTilt += (corrected - smoothTilt) * smoothFactor;
+
+    let angle = (mode === "ai") ? smoothTilt * 0.6 : smoothTilt;
+
+    targetCtx.clearRect(0,0,w,h);
+
+    /* background fill */
+    targetCtx.save();
+    targetCtx.filter = "blur(18px) brightness(0.35)";
+    targetCtx.drawImage(v, 0,0,vw,vh, 0,0,w,h);
+    targetCtx.restore();
+
+    /* foreground */
+    const cover = coverCrop(vw, vh, w, h);
+
+    targetCtx.save();
+    targetCtx.translate(w/2, h/2);
+    targetCtx.rotate((-angle * Math.PI) / 180);
+
+    targetCtx.drawImage(
+        v,
+        cover.x, cover.y, cover.w, cover.h,
+        -w/2, -h/2, w, h
+    );
+
+    targetCtx.restore();
+
+    /* watermark */
+    targetCtx.fillStyle = "white";
+    targetCtx.font = "14px Arial";
+    targetCtx.fillText(
+        "Made by The Dice Team • @lsuheeindie",
+        20,
+        h - 20
+    );
+}
+
+/* =========================
+   MAIN LOOP
+========================= */
+function draw(){
+    render(ctx, c.width, c.height);
+    render(recCtx, recCanvas.width, recCanvas.height);
+    requestAnimationFrame(draw);
+}
+draw();
+
+/* =========================
+   UI
+========================= */
+document.getElementById("settingsBtn").onclick=()=>{
+    document.getElementById("panel").classList.toggle("open");
+};
+
+document.getElementById("closeBtn").onclick=()=>{
+    document.getElementById("panel").classList.remove("open");
+};
+
+/* =========================
+   PHOTO
+========================= */
+document.getElementById("capture").onclick=()=>{
+    c.toBlob(b=>{
+        const a=document.createElement("a");
+        a.href=URL.createObjectURL(b);
+        a.download="photo.jpg";
+        a.click();
+    });
+};
+
+/* =========================
+   VIDEO (FIXED MANUAL TOGGLE)
+========================= */
+
+let mediaRecorder;
+let chunks = [];
+let isRecording = false;
+
+document.getElementById("record").onclick=()=>{
+
+    if(!isRecording){
+
+        const stream = recCanvas.captureStream(30);
+        mediaRecorder = new MediaRecorder(stream);
+
+        chunks = [];
+
+        mediaRecorder.ondataavailable = e=>{
+            if(e.data.size) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = ()=>{
+            const blob = new Blob(chunks,{type:"video/webm"});
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "video.webm";
+            a.click();
+        };
+
+        mediaRecorder.start();
+        isRecording = true;
+
+        document.getElementById("record").textContent = "⏹";
+
+    } else {
+
+        mediaRecorder.stop();
+        isRecording = false;
+
+        document.getElementById("record").textContent = "🎥";
+    }
+};
+
+</script>
+
+</body>
+</html>
